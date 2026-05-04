@@ -2,8 +2,7 @@ from sqlalchemy import Boolean, Column, DateTime, Float, Integer, String
 
 from .connection import Base
 
-
-class SensorReading(Base):
+class SensorReadingModel(Base):
     __tablename__ = "sensor_readings"
 
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
