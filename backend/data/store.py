@@ -1,60 +1,68 @@
 from datetime import datetime
+from sqlalchemy import func
 
-store = []
+from database.connection import SessionLocal
+from database.models import SensorReading
+
 
 def append_reading(reading):
-    store.append(reading)
+    if isinstance(reading.get("timestamp"), str):
+        reading["timestamp"] = datetime.fromisoformat(reading["timestamp"])
+
+    sensor_reading = SensorReading(
+        machine_id=reading["machine_id"],
+        machine_name=reading["machine_name"],
+        sensor_type=reading["sensor_type"],
+        value=reading["value"],
+        unit=reading["unit"],
+        timestamp=reading["timestamp"],
+        is_anomaly=reading.get("is_anomaly", False),
+        drift_status=reading.get("drift_status"),
+    )
+
+    with SessionLocal() as db:
+        db.add(sensor_reading)
+        db.commit()
+        db.refresh(sensor_reading)
+
+    return sensor_reading
+
 
 def get_all_reading():
-    return store
+    with SessionLocal() as db:
+        readings = db.query(SensorReading).all()
+        return readings
+
 
 def get_latest_by_machine():
-    machines = {}
-    
-    for reading in store:
-        machine_id = reading["machine_id"]
-        machine_name = reading["machine_name"]
-        sensor_type = reading["sensor_type"]
-        
-        # initialize machine entry if not present
-        if machine_id not in machines:
-            machines[machine_id] = {
-                "machine_id": machine_id,
-                "machine_name": machine_name,
-                "sensors": {}
+    with SessionLocal() as db:
+        subq = db.query(
+            SensorReading.machine_id,
+            SensorReading.sensor_type,
+            func.max(SensorReading.timestamp).label('max_timestamp')
+        ).group_by(SensorReading.machine_id, SensorReading.sensor_type).subquery()
+
+        latest_readings = db.query(SensorReading).join(
+            subq,
+            (SensorReading.machine_id == subq.c.machine_id) &
+            (SensorReading.sensor_type == subq.c.sensor_type) &
+            (SensorReading.timestamp == subq.c.max_timestamp)
+        ).all()
+
+        machines = {}
+        for reading in latest_readings:
+            machine_id = reading.machine_id
+            if machine_id not in machines:
+                machines[machine_id] = {
+                    "machine_id": machine_id,
+                    "machine_name": reading.machine_name,
+                    "sensors": {}
+                }
+            machines[machine_id]["sensors"][reading.sensor_type] = {
+                "value": reading.value,
+                "unit": reading.unit,
+                "is_anomaly": reading.is_anomaly,
+                "timestamp": reading.timestamp.isoformat() if reading.timestamp else None
             }
-        
-        # initialize sensor entry if not present
-        if sensor_type not in machines[machine_id]["sensors"]:
-            machines[machine_id]["sensors"][sensor_type] = reading
-        else:
-            # compare timestamps and keep the most recent
-            current_timestamp = machines[machine_id]["sensors"][sensor_type]["timestamp"]
-            new_timestamp = reading["timestamp"]
-            
-            # parse ISO format timestamps for comparison
-            try:
-                current_dt = datetime.fromisoformat(current_timestamp)
-                new_dt = datetime.fromisoformat(new_timestamp)
-                if new_dt > current_dt:
-                    machines[machine_id]["sensors"][sensor_type] = reading
-            except (ValueError, TypeError):
-                machines[machine_id]["sensors"][sensor_type] = reading
-    
-    result = []
-    for machine in machines.values():
-        sensors_summary = {}
-        for sensor_type, reading in machine["sensors"].items():
-            sensors_summary[sensor_type] = {
-                "value": reading["value"],
-                "unit": reading["unit"],
-                "is_anomaly": reading["is_anomaly"],
-                "timestamp": reading["timestamp"]
-            }
-        result.append({
-            "machine_id": machine["machine_id"],
-            "machine_name": machine["machine_name"],
-            "sensors": sensors_summary
-        })
-    
-    return result
+
+        return list(machines.values())
